@@ -42,6 +42,8 @@ from medcat.utils.decorators import deprecated
 from medcat.ner.transformers_ner import TransformersNER
 from medcat.utils.saving.serializer import SPECIALITY_NAMES
 
+from negspacy.negation import Negex
+from negspacy.termsets import termset
 
 logger = logging.getLogger(__name__) # separate logger from the package-level one
 
@@ -389,6 +391,21 @@ class CAT(object):
                                           config_dict=meta_cat_config_dict))
 
         cat = cls(cdb=cdb, config=cdb.config, vocab=vocab, meta_cats=meta_cats, addl_ner=addl_ner)
+
+        # Add negspacy - https://github.com/jenojp/negspacy
+        # Next line avoids accidentally removing 'unused import' in vscode
+        logging.debug(f"Setting up {Negex.__name__}")
+        # ts = termset("en_clinical_sensitive") # for additional history related stuff
+
+        ts = termset("en_clinical")
+        cat.pipe.spacy_nlp.add_pipe(
+            "negex",
+            config={
+                "neg_termset": ts.get_patterns(),
+                "chunk_prefix": ["no"],
+            },
+        )
+
         logger.info(cat.get_model_card())  # Print the model card
         return cat
 
@@ -1190,7 +1207,6 @@ class CAT(object):
         for name, component in nn_components:
             component.config.general['disable_component_lock'] = True
 
-        # For meta_cat compoments 
         for name, component in [c for c in nn_components if isinstance(c[1], MetaCAT)]:
             spacy_docs = component.pipe(spacy_docs)
         for spacy_doc in spacy_docs:
@@ -1274,7 +1290,6 @@ class CAT(object):
         self.pipe.spacy_nlp.max_length = self.config.preprocessing.max_document_length
 
         if self._meta_cats and not separate_nn_components:
-            # Hack for torch using multithreading, which is not good if not 
             #separate_nn_components, need for CPU runs only
             import torch
             torch.set_num_threads(1)
@@ -1317,7 +1332,6 @@ class CAT(object):
                 _batch_counter += 1
                 del _docs
                 if out_split_size_chars is not None and (_batch_counter * batch_size_chars) > out_split_size_chars:
-                    # Save to file and reset the docs 
                     part_counter = self._save_docs_to_file(docs=docs,
                                                            annotated_ids=annotated_ids,
                                                            save_dir_path=save_dir_path,
@@ -1332,7 +1346,6 @@ class CAT(object):
 
         # Save the last batch
         if out_split_size_chars is not None and len(docs) > 0:
-            # Save to file and reset the docs 
             self._save_docs_to_file(docs=docs,
                                     annotated_ids=annotated_ids,
                                     save_dir_path=save_dir_path,
@@ -1604,6 +1617,12 @@ class CAT(object):
 
                     if hasattr(ent._, 'meta_anns') and ent._.meta_anns:
                         out_ent['meta_anns'] = ent._.meta_anns
+
+                    # Add negations using negspacy
+                    try:
+                        out_ent["negex"] = ent._.negex
+                    except:
+                        out_ent["negex"] = None
 
                     out['entities'][out_ent['id']] = dict(out_ent)
                 else:
