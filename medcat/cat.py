@@ -40,7 +40,7 @@ from medcat.config import Config, LinkingFilters
 from medcat.vocab import Vocab
 from medcat.utils.decorators import deprecated
 from medcat.ner.transformers_ner import TransformersNER
-from medcat.utils.saving.serializer import SPECIALITY_NAMES
+from medcat.utils.saving.serializer import SPECIALITY_NAMES, ONE2MANY
 
 from negspacy.negation import Negex
 from negspacy.termsets import termset
@@ -358,7 +358,8 @@ class CAT(object):
 
         # Load the CDB
         cdb_path = os.path.join(model_pack_path, "cdb.dat")
-        has_jsons = len(glob.glob(os.path.join(model_pack_path, '*.json'))) >= len(SPECIALITY_NAMES)
+        nr_of_jsons_expected = len(SPECIALITY_NAMES) - len(ONE2MANY)
+        has_jsons = len(glob.glob(os.path.join(model_pack_path, '*.json'))) >= nr_of_jsons_expected
         json_path = model_pack_path if has_jsons else None
         logger.info('Loading model pack with %s', 'JSON format' if json_path else 'dill format')
         cdb = CDB.load(cdb_path, json_path)
@@ -550,10 +551,14 @@ class CAT(object):
                             anns_norm.append((ann['start'], cui))
                             anns_examples.append({"text": doc['text'][max(0, ann['start']-60):ann['end']+60],
                                                   "cui": cui,
+                                                  "start": ann['start'],
+                                                  "end": ann['end'],
                                                   "source value": ann['value'],
                                                   "acc": 1,
                                                   "project name": project.get('name'),
-                                                  "document name": doc.get('name')})
+                                                  "document name": doc.get('name'),
+                                                  "project id": project.get('id'),
+                                                  "document id": doc.get('id')})
                         elif ann.get('validated', True) and (ann.get('killed', False) or ann.get('deleted', False)):
                             anns_norm_neg.append((ann['start'], cui))
 
@@ -572,11 +577,14 @@ class CAT(object):
                     p_anns_norm.append((ann.start_char, cui))
                     p_anns_examples.append({"text": doc['text'][max(0, ann.start_char-60):ann.end_char+60],
                                             "cui": cui,
+                                            "start": ann.start_char,
+                                            "end": ann.end_char,
                                             "source value": ann.text,
                                             "acc": float(ann._.context_similarity),
                                             "project name": project.get('name'),
-                                            "document name": doc.get('name')})
-
+                                            "document name": doc.get('name'),
+                                            "project id": project.get('id'),
+                                            "document id": doc.get('id')})
                 for iann, ann in enumerate(p_anns_norm):
                     cui = ann[1]
                     if ann in anns_norm:
@@ -859,6 +867,8 @@ class CAT(object):
                 for _cui in cuis:
                     self.linker.context_model.train(cui=_cui, entity=spacy_entity, doc=spacy_doc, negative=True)  # type: ignore
 
+    @deprecated(message="Use train_supervised_from_json to train based on data "
+                "loaded from a json file")
     def train_supervised(self,
                          data_path: str,
                          reset_cui_count: bool = False,
@@ -878,9 +888,93 @@ class CAT(object):
                          checkpoint: Optional[Checkpoint] = None,
                          retain_filters: bool = False,
                          is_resumed: bool = False) -> Tuple:
-        """TODO: Refactor, left from old
-        Run supervised training on a dataset from MedCATtrainer. Please take care that this is more a simulated
-        online training then supervised.
+        """Train supervised by reading data from a json file.
+
+        Refer to `train_supervvised_from_json` and/or `train_supervised_raw`
+        for further details.
+        """
+        return self.train_supervised_from_json(data_path, reset_cui_count, nepochs,
+                                               print_stats, use_filters, terminate_last,
+                                               use_overlaps, use_cui_doc_limit, test_size,
+                                               devalue_others, use_groups, never_terminate,
+                                               train_from_false_positives, extra_cui_filter,
+                                               retain_extra_cui_filter, checkpoint,
+                                               retain_filters, is_resumed)
+
+    def train_supervised_from_json(self,
+                                   data_path: str,
+                                   reset_cui_count: bool = False,
+                                   nepochs: int = 1,
+                                   print_stats: int = 0,
+                                   use_filters: bool = False,
+                                   terminate_last: bool = False,
+                                   use_overlaps: bool = False,
+                                   use_cui_doc_limit: bool = False,
+                                   test_size: int = 0,
+                                   devalue_others: bool = False,
+                                   use_groups: bool = False,
+                                   never_terminate: bool = False,
+                                   train_from_false_positives: bool = False,
+                                   extra_cui_filter: Optional[Set] = None,
+                                   retain_extra_cui_filter: bool = False,
+                                   checkpoint: Optional[Checkpoint] = None,
+                                   retain_filters: bool = False,
+                                   is_resumed: bool = False) -> Tuple:
+        """
+        Run supervised training on a dataset from MedCATtrainer in JSON format.
+
+        Refer to `train_supervised_raw` for more details.
+        """
+        with open(data_path) as f:
+            data = json.load(f)
+        return self.train_supervised_raw(data, reset_cui_count, nepochs,
+                                         print_stats, use_filters, terminate_last,
+                                         use_overlaps, use_cui_doc_limit, test_size,
+                                         devalue_others, use_groups, never_terminate,
+                                         train_from_false_positives, extra_cui_filter,
+                                         retain_extra_cui_filter, checkpoint,
+                                         retain_filters, is_resumed)
+
+    def train_supervised_raw(self,
+                             data: Dict[str, List[Dict[str, dict]]],
+                             reset_cui_count: bool = False,
+                             nepochs: int = 1,
+                             print_stats: int = 0,
+                             use_filters: bool = False,
+                             terminate_last: bool = False,
+                             use_overlaps: bool = False,
+                             use_cui_doc_limit: bool = False,
+                             test_size: int = 0,
+                             devalue_others: bool = False,
+                             use_groups: bool = False,
+                             never_terminate: bool = False,
+                             train_from_false_positives: bool = False,
+                             extra_cui_filter: Optional[Set] = None,
+                             retain_extra_cui_filter: bool = False,
+                             checkpoint: Optional[Checkpoint] = None,
+                             retain_filters: bool = False,
+                             is_resumed: bool = False) -> Tuple:
+        """Train supervised based on the raw data provided.
+
+        The raw data is expected in the following format:
+        {'projects':
+            [ # list of projects
+                { # project 1
+                    'name': '<some name>',
+                    # list of documents
+                    'documents': [{'name': '<some name>',  # document 1
+                                    'text': '<text of the document>',
+                                    # list of annotations
+                                    'annotations': [{'start': -1,  # annotation 1
+                                                    'end': 1,
+                                                    'cui': 'cui',
+                                                    'value': '<text value>'}, ...],
+                                    }, ...]
+                }, ...
+            ]
+        }
+
+        Please take care that this is more a simulated online training then supervised.
 
         When filtering, the filters within the CAT model are used first,
         then the ones from MedCATtrainer (MCT) export filters,
@@ -889,8 +983,8 @@ class CAT(object):
         extra_cui_filter ⊆ MCT filter ⊆ Model/config filter.
 
         Args:
-            data_path (str):
-                The path to the json file that we get from MedCATtrainer on export.
+            data (Dict[str, List[Dict[str, dict]]]):
+                The raw data, e.g from MedCATtrainer on export.
             reset_cui_count (boolean):
                 Used for training with weight_decay (annealing). Each concept has a count that is there
                 from the beginning of the CDB, that count is used for annealing. Resetting the count will
@@ -959,8 +1053,7 @@ class CAT(object):
         local_filters = self.config.linking.filters.copy_of()
 
         fp = fn = tp = p = r = f1 = examples = {}
-        with open(data_path) as f:
-            data = json.load(f)
+
         cui_counts = {}
 
         if retain_filters:
